@@ -1,0 +1,23 @@
+body {
+    margin: 0;
+    background-color: #1f1f1f;
+    display: grid;
+    place-items: center;
+    width: 100vw;
+    height: 100vh;
+}
+
+canvas {
+    /* border: white 2px solid; */
+    box-sizing: border-box;
+    background-color: aliceblue;
+
+    width: 100vw;
+    height: auto;
+
+    /* TODO: can this be set in js? */
+    @media (min-aspect-ratio: 9/16) {
+        height: 100vh;
+        width: auto;
+    }
+}
