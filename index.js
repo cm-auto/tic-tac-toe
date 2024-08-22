@@ -101,6 +101,20 @@ function print(str_ptr, str_len) {
     console.log(str)
 }
 
+function print_number(num) {
+    console.log(num)
+}
+
+function print_panic_location(file_path_ptr, file_path_len, line, column) {
+    console.error(`Panic in file:\n${get_text(file_path_ptr, file_path_len)}\nLine:${line}\nColumn:${column}`)
+}
+
+let has_panicked = false
+function handle_panic() {
+    has_panicked = true
+    console.error("There was a panic in the wasm code. Stopping game loop.")
+}
+
 const source = await WebAssembly.instantiateStreaming(fetch("game.wasm"), {
     drawing: {
         draw_line,
@@ -117,6 +131,9 @@ const source = await WebAssembly.instantiateStreaming(fetch("game.wasm"), {
         fill_text,
         set_line_join,
         print,
+        print_number,
+        print_panic_location,
+        handle_panic,
     }
 })
 
@@ -135,7 +152,6 @@ canvas.addEventListener("click", e => {
 
 window.addEventListener("resize", _ => {
     const { offsetWidth, offsetHeight } = canvas
-    // set canvas size
     canvas.width = offsetWidth
     canvas.height = offsetHeight
     const { width, height } = canvas
@@ -144,6 +160,9 @@ window.addEventListener("resize", _ => {
 
 let last
 function loop(timestamp) {
+    if (has_panicked) {
+        return
+    }
     requestAnimationFrame(loop)
     if (!last) {
         last = timestamp

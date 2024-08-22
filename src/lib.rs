@@ -1,25 +1,65 @@
 #![cfg_attr(not(test), no_std)]
 
+macro_rules! static_variable {
+    ($name:ident, $static_name:ident: $ty:ty = $value:expr) => {
+        static mut $static_name: $ty = $value;
+        fn $name() -> &'static mut $ty {
+            let stringifed_static_name = stringify!($static_name);
+            unsafe {
+                match core::ptr::addr_of_mut!($static_name).as_mut() {
+                    Some(x) => x,
+                    None => unreachable!("Address of {stringifed_static_name} is null"),
+                }
+            }
+        }
+    };
+}
+
+#[cfg(debug_assertions)]
+fn print_panic_location(location: &core::panic::Location) {
+    drawing::print_panic_location(
+        location.file(),
+        location.line() as f64,
+        location.column() as f64,
+    );
+}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+fn print_panic_location(_location: &core::panic::Location) {}
+
 #[cfg_attr(not(test), panic_handler)]
-fn _panic_handler(_info: &core::panic::PanicInfo) -> ! {
-    // TODO: write panic_handler
-    // let location_option = _info.location();
-    // if let Some(location) = location_option {
-    //     unsafe {
-    //         // for this we need allocation
-    //         let file_cstr = CString::from(location.file());
-    //         libc::printf(
-    //             // get_c_str!("Got panic in file:\n%s\n%d:%d\n"),
-    //             get_c_str!("Got panic in file:\n%s\n%u:%u\n"),
-    //             file_cstr.get_ptr(),
-    //             location.line(),
-    //             location.column(),
-    //         );
-    //     };
-    // }
-    // unsafe { libc::exit(12) };
-    #[allow(clippy::empty_loop)]
-    loop {}
+// this is not really dead code, since it is used as the panic handler
+#[allow(dead_code)]
+fn panic_handler(_info: &core::panic::PanicInfo) -> ! {
+    // using this code makes the binary about 1300 bytes bigger
+    // which is why print_panic_location is only implemented in debug builds
+    // and a noop in release builds (the user won't see the console anyway)
+    let location_option = _info.location();
+    if let Some(location) = location_option {
+        // unsafe {
+        //     // this works but needs an additional 1800 bytes!
+        //     static_variable!(panic_string_buffer, PANIC_STRING_BUFFER: [u8; 1024] = [0; 1024]);
+        //     let mut panic_string_buffer = PANIC_STRING_BUFFER;
+        //     let mut length = 0;
+        //     let ptr = panic_string_buffer.as_mut_ptr();
+        //     let message = b"Got panic in file:\n";
+        //     ptr.copy_from(message.as_ptr(), message.len());
+        //     let ptr = ptr.add(message.len());
+        //     length += message.len();
+        //     let file_path = location.file();
+        //     ptr.copy_from(file_path.as_ptr(), file_path.len());
+        //     length += file_path.len();
+        //     // let ptr = ptr.add(file_path.len());
+        //     let slice = core::slice::from_raw_parts(panic_string_buffer.as_ptr(), length);
+        //     let panic_text = str::from_utf8(slice).unwrap_unchecked();
+        //     drawing::print(panic_text);
+        // }
+
+        print_panic_location(location);
+    }
+    draw_message_dialog("Error");
+    drawing::handle_panic();
 }
 
 #[repr(C)]
@@ -28,8 +68,26 @@ struct Vector2 {
     y: f64,
 }
 
+macro_rules! safe_extern_function {
+        ($module:expr, $name:ident, $unsafe_name:ident, ($($arg:ident: $ty:ty),*) $(-> $ret:ty)?) => {
+            #[link(wasm_import_module = $module)]
+            extern "C" {
+                #[link_name = stringify!($name)]
+                fn $unsafe_name($($arg: $ty),*)$( -> $ret)?;
+            }
+            pub fn $name($($arg: $ty),*)$( -> $ret)? {
+                unsafe { $unsafe_name($($arg),*) }
+            }
+        };
+    }
+
 mod drawing {
-    use core::f64;
+
+    macro_rules! safe_extern_drawing_function {
+        ($name:ident, $unsafe_name:ident, ($($arg:ident: $ty:ty),*) $(-> $ret:ty)?) => {
+            safe_extern_function!("drawing", $name, $unsafe_name, ($($arg: $ty),*) $(-> $ret)?);
+        };
+    }
 
     #[allow(dead_code)]
     #[repr(C)]
@@ -41,13 +99,21 @@ mod drawing {
 
     use crate::*;
 
-    // write macro for safe usage of external functions -> done
-    // TODO: use macro for safe usage of external functions
+    safe_extern_drawing_function!(draw_line, _draw_line, (x1: f64, y1: f64, x2: f64, y2: f64));
+
+    // this is not relative to canvas size
+    // you need to multiply it with the canvas size
+    safe_extern_drawing_function!(set_stroke_thickness, _set_stroke_thickness, (thickness: f64));
+
+    safe_extern_drawing_function!(fill_rect, _fill_rect, (x: f64, y: f64, w: f64, h: f64));
+    safe_extern_drawing_function!(stroke_rect, _stroke_rect, (x: f64, y: f64, w: f64, h: f64));
+
+    safe_extern_drawing_function!(set_line_join, _set_line_join, (join: LineJoin));
+
+    safe_extern_drawing_function!(handle_panic, _handle_panic, () -> !);
 
     #[link(wasm_import_module = "drawing")]
     extern "C" {
-        #[link_name = "draw_line"]
-        fn _draw_line(x1: f64, y1: f64, x2: f64, y2: f64);
         #[link_name = "draw_ellipse"]
         fn _draw_ellipse(
             x: f64,
@@ -65,53 +131,23 @@ mod drawing {
         fn _canvas_height() -> f64;
         #[link_name = "set_stroke_color"]
         fn _set_stroke_color(r: u8, g: u8, b: u8, a: u8);
-        #[link_name = "set_stroke_thickness"]
-        fn _set_stroke_thickness(thickness: f64);
 
         #[link_name = "set_fill_color"]
         fn _set_fill_color(r: u8, g: u8, b: u8, a: u8);
-        #[link_name = "fill_rect"]
-        fn _fill_rect(x: f64, y: f64, w: f64, h: f64);
-        #[link_name = "stroke_rect"]
-        fn _stroke_rect(x: f64, y: f64, w: f64, h: f64);
 
         #[link_name = "set_font"]
         fn _set_font(pixel_size: f64, text: *const u8, len: usize);
         #[link_name = "fill_text"]
         fn _fill_text(text: *const u8, len: usize, x: f64, y: f64, max_width: f64);
 
-        // #[link_name = "set_line_join"]
-        // fn _set_line_join(join: LineJoin);
-
         #[link_name = "print"]
         fn _print(s: *const u8, len: usize);
+        #[link_name = "print_number"]
+        fn _print_number(num: f64);
+        #[link_name = "print_panic_location"]
+        fn _print_panic_location(s: *const u8, len: usize, line: f64, column: f64);
     }
 
-    macro_rules! safe_extern_function {
-        ($module:expr, $name:ident, $unsafe_name:ident, ($($arg:ident: $ty:ty),*)) => {
-            #[link(wasm_import_module = $module)]
-            extern "C" {
-                #[link_name = stringify!($name)]
-                fn $unsafe_name($($arg: $ty),*);
-            }
-            pub fn $name($($arg: $ty),*) {
-                unsafe { $unsafe_name($($arg),*) };
-            }
-        };
-    }
-    macro_rules! safe_extern_drawing_function {
-        ($name:ident, $unsafe_name:ident, ($($arg:ident: $ty:ty),*)) => {
-            safe_extern_function!("drawing", $name, $unsafe_name, ($($arg: $ty),*));
-        };
-    }
-    // safe_extern_function!("drawing", fill_text, _fill_text, text: *const u8, len: usize, x: f64, y: f64, max_width: f64);
-    // safe_extern_drawing_function!(fill_text, _fill_text, (text: *const u8, len: usize, x: f64, y: f64, max_width: f64));
-
-    safe_extern_drawing_function!(set_line_join, _set_line_join, (join: LineJoin));
-
-    pub fn draw_line(x1: f64, y1: f64, x2: f64, y2: f64) {
-        unsafe { _draw_line(x1, y1, x2, y2) };
-    }
     #[allow(clippy::too_many_arguments)]
     pub fn draw_ellipse(
         x: f64,
@@ -137,7 +173,7 @@ mod drawing {
         };
     }
     pub fn draw_full_ellipse(x: f64, y: f64, w: f64, h: f64) {
-        draw_ellipse(x, y, w, h, 0.0, 0.0, 2.0 * f64::consts::PI, false)
+        draw_ellipse(x, y, w, h, 0.0, 0.0, 2.0 * core::f64::consts::PI, false)
     }
     pub fn draw_circle(x: f64, y: f64, r: f64) {
         draw_full_ellipse(x, y, r, r)
@@ -150,26 +186,14 @@ mod drawing {
             }
         }
     }
-    // pub fn set_stroke_color(r: u8, g: u8, b: u8, a: u8) {
     pub fn set_stroke_color(color: impl Into<Color>) {
         let (r, g, b, a) = color.into().to_bytes();
         unsafe { _set_stroke_color(r, g, b, a) };
-    }
-    // this is not relative to canvas size
-    // you need to multiply it with the canvas size
-    pub fn set_stroke_thickness(thickness: f64) {
-        unsafe { _set_stroke_thickness(thickness) };
     }
 
     pub fn set_fill_color(color: impl Into<Color>) {
         let (r, g, b, a) = color.into().to_bytes();
         unsafe { _set_fill_color(r, g, b, a) };
-    }
-    pub fn fill_rect(x: f64, y: f64, w: f64, h: f64) {
-        unsafe { _fill_rect(x, y, w, h) };
-    }
-    pub fn stroke_rect(x: f64, y: f64, w: f64, h: f64) {
-        unsafe { _stroke_rect(x, y, w, h) };
     }
 
     pub fn set_font(pixel_size: f64, font: &str) {
@@ -187,9 +211,17 @@ mod drawing {
     }
 
     #[allow(dead_code)]
-    #[cfg(debug_assertions)]
     pub fn print(text: &str) {
         unsafe { _print(text.as_ptr(), text.len()) };
+    }
+    #[allow(dead_code)]
+    pub fn print_number(num: f64) {
+        unsafe { _print_number(num) };
+    }
+    // in release builds, this function will not be called
+    #[allow(dead_code)]
+    pub fn print_panic_location(text: &str, line: f64, column: f64) {
+        unsafe { _print_panic_location(text.as_ptr(), text.len(), line, column) };
     }
 }
 
@@ -227,21 +259,6 @@ impl From<u64> for Color {
     fn from(value: u64) -> Self {
         Color(value)
     }
-}
-
-macro_rules! static_variable {
-    ($name:ident, $static_name:ident: $ty:ty = $value:expr) => {
-        static mut $static_name: $ty = $value;
-        fn $name() -> &'static mut $ty {
-            let stringifed_static_name = stringify!($static_name);
-            unsafe {
-                match core::ptr::addr_of_mut!($static_name).as_mut() {
-                    Some(x) => x,
-                    None => unreachable!("Address of {stringifed_static_name} is null"),
-                }
-            }
-        }
-    };
 }
 
 #[derive(Copy, Clone, PartialEq)]
