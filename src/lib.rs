@@ -140,6 +140,22 @@ mod drawing {
         #[link_name = "fill_text"]
         fn _fill_text(text: *const u8, len: usize, x: f64, y: f64, max_width: f64);
 
+        #[link_name = "save_bytes"]
+        fn _save_bytes(
+            key_ptr: *const u8,
+            key_len: usize,
+            value_ptr: *const u8,
+            value_len: usize,
+        ) -> bool;
+        #[link_name = "load_bytes"]
+        fn _load_bytes(
+            key_ptr: *const u8,
+            key_len: usize,
+            value_ptr: *const u8,
+            value_buffer_len: usize,
+            has_value_ptr: *mut bool,
+        );
+
         #[link_name = "print"]
         fn _print(s: *const u8, len: usize);
         #[link_name = "print_number"]
@@ -207,6 +223,55 @@ mod drawing {
     pub fn fill_text_with_max_width(text: &str, x: f64, y: f64, max_width: f64) {
         unsafe {
             _fill_text(text.as_ptr(), text.len(), x, y, max_width);
+        }
+    }
+
+    /// returns true if saving was successful
+    #[must_use]
+    pub fn save_bytes(key: &str, value: &[u8]) -> bool {
+        unsafe { _save_bytes(key.as_ptr(), key.len(), value.as_ptr(), value.len()) }
+    }
+
+    // originally I wanted this function to take a mutable slice and return an Option<&[u8]>, both with the same lifetime
+    // the problem was I could not force the caller to check the Option, before using the original slice
+    // the borrowing was finished at this point, so the caller could use the original slice/array
+    // Example:
+    // ```
+    // let mut buffer = [0_u8; 10];
+    // let bytes_option = drawing::load_bytes("game_state", &mut buffer);
+    // ##### user should check for None
+    // // let bytes = match bytes_option {
+    // //     Some(bytes) => bytes,
+    // //     None => return,
+    // // };
+    // ##### however they can just use the original buffer, without checking the option
+    // for byte in buffer {
+    //     ...
+    // }
+    // ```
+    //
+    // I even tried to make this function taking an array with const N: usize, and thus moving the array
+    // but that didn't work, as the array was just copied and the original array could still be accessed
+    // ```
+    // pub fn load_bytes<const N: usize>(key: &str, mut value: [u8; N]) -> Option<[u8; N]> {
+    // ```
+    // the macro #[must_use] only generates a warning
+    #[must_use]
+    pub fn load_bytes<'a>(key: &str, value: &'a mut [u8]) -> Option<&'a [u8]> {
+        let mut has_value = false;
+        unsafe {
+            _load_bytes(
+                key.as_ptr(),
+                key.len(),
+                value.as_mut_ptr(),
+                value.len(),
+                &mut has_value,
+            )
+        };
+        if has_value {
+            Some(value)
+        } else {
+            None
         }
     }
 
@@ -292,6 +357,7 @@ impl GameState {
     fn reset(&mut self) {
         self.cells = [None; 9];
         self.current_player = CellState::X;
+        self.save();
     }
 
     fn get_winner(&self) -> Option<(CellState, usize, usize)> {
@@ -316,6 +382,49 @@ impl GameState {
 
     fn is_draw(&self) -> bool {
         self.cells.iter().all(|&cell| cell.is_some())
+    }
+
+    fn save(&self) {
+        let cells = self.cells;
+        let current_player = self.current_player;
+        let mut bytes = [0_u8; 10];
+        for (i, cell) in cells.iter().enumerate() {
+            bytes[i] = match cell {
+                None => 0,
+                Some(CellState::X) => 1,
+                Some(CellState::O) => 2,
+            }
+        }
+        bytes[9] = match current_player {
+            CellState::X => 1,
+            CellState::O => 2,
+        };
+
+        if !drawing::save_bytes("game_state", &bytes) {
+            // if there was an error, when saving we just ignore it
+        };
+    }
+
+    fn load(&mut self) {
+        let mut buffer = [0_u8; 10];
+        let bytes_option = drawing::load_bytes("game_state", &mut buffer);
+        let bytes = match bytes_option {
+            Some(bytes) => bytes,
+            None => return,
+        };
+        for (i, cell) in self.cells.iter_mut().enumerate() {
+            *cell = match bytes[i] {
+                0 => None,
+                1 => Some(CellState::X),
+                2 => Some(CellState::O),
+                _ => unreachable!(),
+            }
+        }
+        self.current_player = match bytes[9] {
+            1 => CellState::X,
+            2 => CellState::O,
+            _ => unreachable!(),
+        };
     }
 }
 
@@ -365,6 +474,7 @@ pub extern "C" fn handle_click(x: f64, y: f64) {
         *cell = Some(*current_player);
         current_player.switch();
     }
+    state().save();
 }
 
 static_variable!(size, SIZE: Vector2 = Vector2 { x: 0.0, y: 0.0 });
@@ -499,6 +609,7 @@ pub extern "C" fn init() {
     let size = canvas_size();
     set_size(size.x, size.y);
     set_line_join(LineJoin::Round);
+    state().load();
 }
 
 #[no_mangle]

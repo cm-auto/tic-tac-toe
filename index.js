@@ -22,6 +22,7 @@ function draw_ellipse(x, y, w, h, rotation, startAngle, endAngle, counterclockwi
 // this function can't be used like that, because wasm only supports
 // simple numeric parameters, so a simple struct can't be returned
 // alternative: request_canvas_size() -> call rust function with multiple params
+// other alternative: pass a pointer to an array, as argument
 // function canvas_size() {
 //     // const array = new Float64Array(2)
 //     // array[0] = canvas.width
@@ -66,12 +67,12 @@ function stroke_rect(x, y, w, h) {
  * 
  * @returns {ArrayBuffer}
  */
-function getBuffer() {
+function get_buffer() {
     return source.instance.exports.memory.buffer
 }
 const decoder = new TextDecoder("utf-8")
 function get_text(str_ptr, str_len) {
-    const arrayBuffer = getBuffer().slice(str_ptr, str_ptr + str_len)
+    const arrayBuffer = get_buffer().slice(str_ptr, str_ptr + str_len)
     // this copies the string, which is desired
     return decoder.decode(arrayBuffer)
 }
@@ -94,10 +95,53 @@ function set_line_join(line_join) {
     ctx.lineJoin = map[line_join]
 }
 
+// localStorge only allows strings, so we need to convert the Uint8Array to a string
+// chunks are required because calling String.fromCharCode
+// on a large Uint8Array might cause exceeding the maximum stack size
+function uint8_array_to_string(uint8_array) {
+    const chunk_size = 1024
+    const chunks = []
+    for (let i = 0; i < uint8_array.length; i += chunk_size) {
+        chunks.push(String.fromCharCode(...uint8_array.subarray(i, i + chunk_size)))
+    }
+    return chunks.join("")
+}
+
+function save_bytes(key_ptr, key_len, value_ptr, value_len) {
+    try {
+        const key = get_text(key_ptr, key_len)
+        const value = get_buffer().slice(value_ptr, value_ptr + value_len)
+        const uint8_array = new Uint8Array(value)
+        const byte_string = uint8_array_to_string(uint8_array)
+        localStorage.setItem(key, byte_string)
+        return true
+    } catch {
+        return false
+    }
+}
+
+function load_bytes(key_ptr, key_len, value_ptr, value_buffer_len, has_value_ptr) {
+    const key = get_text(key_ptr, key_len)
+    const byte_string = localStorage.getItem(key)
+    const view = new DataView(get_buffer())
+    if (!byte_string) {
+        view.setUint8(has_value_ptr, 0)
+        return
+    }
+    const uint8_array = new Uint8Array(byte_string.length)
+    for (let i = 0; i < byte_string.length; i++) {
+        uint8_array[i] = byte_string.charCodeAt(i)
+    }
+    for (let i = 0; i < value_buffer_len; i++) {
+        view.setUint8(value_ptr + i, uint8_array[i])
+    }
+    view.setUint8(has_value_ptr, 1)
+}
+
 // useful for debugging
 function print(str_ptr, str_len) {
-    const arrayBuffer = getBuffer().slice(str_ptr, str_ptr + str_len)
-    const str = decoder.decode(arrayBuffer)
+    const array_buffer = get_buffer().slice(str_ptr, str_ptr + str_len)
+    const str = decoder.decode(array_buffer)
     console.log(str)
 }
 
@@ -130,6 +174,8 @@ const source = await WebAssembly.instantiateStreaming(fetch("game.wasm"), {
         set_font,
         fill_text,
         set_line_join,
+        save_bytes,
+        load_bytes,
         print,
         print_number,
         print_panic_location,
